@@ -84,19 +84,16 @@ MICS Course 252 Fall 2024 (Kristy Westphal)
 
 \section{Introduction}
 We are given a snapshot of some files from a Linux host which has been compromised.
-
-
-\section{Process}
-
-
-\subsection{Open source information}
 Linux version 7.1 is mentioned, assuming this means the Red Hat Distribution 7.1, code named "Seawolf", released in 2001 \cite{RedHatOnWIki}
 
 
 
 
-\subsection{Look at the files}
-It looks like we were issued the contents of Linux system 'var' folder (or parts thereof). In Linux the /var folder contains variable data files. This includes spool directories and files, administrative and logging data, and transient and temporary files \cite{VarFolder}. Folder content is show in \ref{fig:givenFiles} the most interesting folder are the 'tmp' folder holding temporary files and of course the log folder (as hinted in the assignment)
+
+
+
+\section{Look at the files}
+It looks like we were issued the contents of Linux system 'var' folder (or parts thereof). In Linux the /var folder contains variable data files. This includes spool directories and files, administrative and logging data, and transient and temporary files \cite{VarFolder}. Folder content is shown in \ref{fig:givenFiles}
 
 \begin{figure}[!htp] % Single column :figure	
 	\centering
@@ -105,10 +102,153 @@ It looks like we were issued the contents of Linux system 'var' folder (or parts
 	\label{fig:givenFiles}
 \end{figure}
 
-The 'tmp' folder is empty so focusing on the log folder going forwards.
+\subsection{/tmp folder}
+An interesting folders is the /tmp folder holding temporary files. The /tmp folder could contain artifacts from someone trying privilege escalation or achieve persistence. Sometimes un-careful design of by user privileged sudo executable files may contain relative links to files which are then executed with sudo privilege, and a /tmp folder is a good place to execute these. But the /tmp folder is empty.
+
+\subsection{/www folder}
+The /www folder indicates a web server was installed on the compromised host, this could be an attack vector. Sure enough poking around the html files installed by various modules in the web app, the following was enumerated:
+\begin{spacing}{1}
+
+	\begin{itemize}
+		\item Apache version 1.3b5 is used (html/manual/mod/mod\_perl.html)
+		\item mod\_ssl version 2.8 is used to manage the server via SSL v2/v3 and TLS v1 implemented using openSSL (html/manual/mod/mod\_ssl/index.html)
+		\item uses s php-nuke Version from 2003 to handle database transactions to a mySQL database
+	\end{itemize}
+
+\end{spacing}
+The modules and versions of the installed web server are outdated and expose multiple vulnerabilities: XSS, remote code execution, SQL injection \cite{Apache1.3Vulnerabilities}. \\
+
+It is not stated if the compromised Linux host functioned as a webserver, or even if the web server was operating at the time of breach. Will look for evidence in the further analyses.
+
+\subsection{/log folder}
+The log folder has the following sub folders:
+\begin{spacing}{1}
+	\begin{itemize}
+		\item httpd: Apache webserver log files, contains time stamped access and error log entries
+		\item news: no content
+		\item sa: may hold "system activity" logs, has a limited number of binary files and some HH:MM:SS time stamped entries
+		\item samba: Indicates that a SMB file service (Interface to Windows files sharing protocol) has been running. The logs contain some time stamped "authentication failed" entries and connection reset entries. These could be correlated with other events based on timestamp
+		\item squid: logs for a caching proxy used with the web server (indicating that the compromised host was deployed as a web server - you would not need caching for a test/small number of user application) Holds time stamped logs showing failed http requests etc.
+		\item vbox: empty
+	\end{itemize}
+\end{spacing}
+
+The log folder holds a number of species of log files, split into multiple files, some of which are empty:
+
+\begin{spacing}{1}
+	\begin{itemize}
+		\item boot.log.x (1-25): Logging startup, could show artifacts of malicious persistence on the host
+		\item cron.x (1-25): Logs scheduled jobs, definitely a place to look for persistence attempts
+		\item dmesg: Kernel stuff, may capture things during boot before other services come online
+		\item lastlog: Binary
+		\item maillog (1-25): Logs for mail-server (apparently the thing also served mail..)
+		\item messages (1-25): Messages from various services (syslog, ftp etc)
+		\item mysqld.log(1-25): Not much here, most of the files are empty
+		\item pacct (1-6): Binary files, containing information on user's command execution
+		\item secure (1-25): Authentication events (logins, ssh etc.)
+		\item spooler (1-25): Empty
+		\item tmplog: Looks like a mashup of different files
+		\item wtmp (1): Binary
+		\item xferlog (1-24): Empty
+	\end{itemize}
+\end{spacing}
+
+\section{The log files}
+Just looking at the files, the "secure" logs, containing login attempts and the "cron" logs containing persistently scheduled jobs look the most interesting. The logs show some authentication attempts that failed.\\
+I decided to explore all the files, looking for keywords indicating failed login attempts, tool of choice: bash and grep..
+
+\begin{verbatim}
+	grep -Ei 'fail*|illegal|unauth*|refused' {messages*,secure*,boot*,dmesg*,cron*}
+\end{verbatim}
+
+Gives a long list of failed login attempts, further reducing this to get a list of unique users and ip addresses repeatedly trying to login,
+piping (|) the previous result to a regex searching for IP addresses:
+\subsection{Suspicious IP's}
+\begin{verbatim}
+grep -E -o '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)
+\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)'
+\end{verbatim}
+
+And sorting by unique occurrences and counting the attempts:
+
+\begin{verbatim}
+	 | sort | uniq -c | sort -nr
+\end{verbatim}
+
+Gives a list of 'candidates' with a high number of failed attempts to log in Figure \ref{fig:ipShortList} (partial list shown):
+
+\begin{figure}[!htp] % Single column :figure	
+	\centering
+	\includegraphics[width=0.75\linewidth]{ipShortList.png}
+	\caption{IP's sorted by failed login attempts}
+	\label{fig:ipShortList}
+\end{figure}
+
+\subsubsection{"172.184.233.242"}
+has 368 failed attempts and seems to be associated with the domain "acb8e9f2.ipt.aol.com", grepping for that gives a long list of failed FTP logons. Trying to see if it was successful at some point
+
+A bunch of ftp sessions in the "secure" logs show as started, the logs show File:Date Time Host (ns1) service(xinetd)[pid,704] protocol(ftp), xinetd pid and source IP
+\begin{figure}[!htp] % Single column :figure	
+	\centering
+	\includegraphics[width=\linewidth]{secure17ftp.png}
+	\caption{FTP processes attempted starts}
+	\label{fig:secure17ftp}
+\end{figure}
+
+They all seem to be short duration, 45-65s (matching START and EXIT for each pid) seconds indicating they were refused by the server, so nothing conclusive, other that a lot of FTP logon attempts from the source.
 
 
-\printbibliography % Output the bibliography  
+\subsubsection{"80.213.62.170"}
+has 133 failed logins trying to access an SSH service, but is unsuccessful, looks like a failed credential spraying attempt.
+
+\subsubsection{"Remaining candidates"}
+The rest of the ip's with failed logon attempts (Figure \ref{fig:ipShortList} are related to failed ssh logons.
+
+
+\subsection{grep'ing for ssh}
+grep and filtering out all the rejected logon attempts:
+
+\begin{verbatim}
+	grep -Ei 'sshd' {messages*,secure*,boot*,dmesg*,cron*}
+	| grep -E -v -i 'fail*|clos*|disconn*|reverse*|did*|illegal'
+\end{verbatim}
+Shows that some IP's are scanning the ssh server using "SSH-1.0-SSH\_Version\_Mapper .  Don't panic." again this could indicate someone poking  around. Checking for successful logons next:
+
+\begin{verbatim}
+	grep -Ei 'sshd' {messages*,secure*,boot*,dmesg*,cron*} | grep -E -i accepted
+\end{verbatim}
+
+Shows that only the user 'test' has been able to log in, and making a unique list of the IP's, see Figure \ref{fig:successfulSSH} narrows it down to a list that can be compared to the sources with many failed logons:
+
+
+\begin{figure}[!htp] % Single column :figure	
+	\centering
+	\includegraphics[width=\linewidth]{SuccessfulSSHlogins.png}
+	\caption{List of IP's that have successfully logged in}
+	\label{fig:successfulSSH}
+\end{figure}
+
+The successful logins, which also have failed attempts are:
+\begin{verbatim}
+	218.106.100.101 (10 failed attepmts)
+	212.155.111.21 (4 failed attempts, looks like a forgotten password)
+\end{verbatim}
+
+218.106.x... has 10 failed logon attempts, will look into what else that host has been up to. The IP has 10 failed attempts on September 27, but manages to log in on October 7. All attempts are in quick succession spanning a few seconds, looks automated see Figure \ref{fig:AutomatedLogons}
+
+\begin{figure}[!htp] % Single column :figure	
+	\centering
+	\includegraphics[width=\linewidth]{AutomatedLogons.png}
+	\caption{218.106.100.101 successful logons, multiple ssh processes in quick succession}
+	\label{fig:AutomatedLogons}
+\end{figure}
+
+\section{Conclusion}
+The ssh logons from 218.106.100.101 should be investigated further, the cron logs did not show signs of persistence. Next step would be to look at the pacct logs which are in binary (will require a tool for reading). For now I think 218.106.100.101, posing a user 'test' is the culprit.
+
+
+
+\printbibliography % Output the bibliography   
 
 %----------------------------------------------------------------------------------------
 
@@ -121,9 +261,11 @@ The 'tmp' folder is empty so focusing on the log folder going forwards.
 %\appendix
 
 
-%\clearpage
-%\chapter{Appendices}
-%\begin{appendices}
+\clearpage
+\chapter{Appendices}
+\begin{appendices}
+	\section{A bit on my process working on this}
+	My initial idea was to use this assignment to explore a new log analysis tool, so I installed "The Sleuth Kit" and Autopsy. That took quite some time and the results were inconclusive...
 
-%\end{appendices}
+\end{appendices}
 \end{document}
