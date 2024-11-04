@@ -232,8 +232,12 @@ The successful logins, which also have failed attempts are:
 	\label{fig:AutomatedLogons}
 \end{figure}
 
+
+
+
+
 \section{Conclusion}
-The ssh logons from 218.106.100.101 look suspicious, the cron logs however, did not show signs of persistence. Next step would be to look at the pacct logs which are in binary (will require a tool for reading). For now I think 218.106.100.101, posing a user 'test' is the culprit. Determining if the Apache web server was the initial attack vector can be determined by looking for reverse shell commands being executed, this may be found in the pacct logs, i was unable to find logs for the Apache server and grepping for reverse shell execution (bash -i >&) did not reveal anything. So for now 218.106.100.101 should be investigated further..
+The ssh logons from 218.106.100.101 look suspicious, the cron logs however, did not show signs of persistence. Next step would be to look at the pacct logs which are in binary (will require a tool for reading). For now I think 218.106.100.101, posing a user 'test' is the culprit. Determining if the Apache web server was the initial attack vector can be determined by looking for reverse shell commands being executed, this may be found in the pacct logs, I was unable to find logs for the Apache server and grepping for reverse shell execution (bash -i >&) did not reveal anything. The attack uses password spraying and automated (fast) logon attempts, in the IDS limiting the number of and frequency of failed password attempts could easily alert or block the attempts. For now 218.106.100.101 should be investigated further..
 
 
 
